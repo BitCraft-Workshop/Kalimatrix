@@ -1,8 +1,8 @@
-# Kalimatrix
+# Kalimatrix  
 # YouTube / File Transcriber  
 
 A simple, local desktop application to **download YouTube videos or playlists, convert audio/video to MP3/MP4, and generate subtitle files (SRT) with AI transcription** — all on your computer.  
-No installation or setup — just download the repo, keep the folders together, and run the included **.exe**.  
+No installation or setup — just download the release package, keep the folders together, and run the included **.exe**.  
 
 ---
 
@@ -16,13 +16,14 @@ No installation or setup — just download the repo, keep the folders together, 
 
 ---
 
-## 📦 How to Run
-1. Go to this repository and click **Code → Download ZIP**.  
-2. Unzip the contents to any folder on your computer.  
-3. Inside the folder you’ll see:  
+## 📦 How to Get Started
+1. Go to the [Releases page](https://github.com/BitCraft-Workshop/Kalimatrix/releases).  
+2. Download the latest `.zip` file.  
+3. Unzip it to any folder on your computer.  
+4. Inside the folder you’ll see:  
    - `YouTubeTranscriber.exe` → the program  
-   - `bin/` → contains **ffmpeg** and **yt-dlp** (required, don’t delete)  
-   - `models/` → contains the Whisper AI model (required, don’t delete)  
+   - `bin/` → contains **ffmpeg** and **yt-dlp** (required, do not delete)  
+   - `models/` → contains the Whisper AI model (required, do not delete)  
    - `assets/` → optional images/screenshots  
    - `README.md` → this file  
 
@@ -45,9 +46,9 @@ No installation or setup — just download the repo, keep the folders together, 
 
 ---
 
-## 📂 Folder Layout
+## 📂 Package Layout
 ```
-YouTube-Transcriber/
+Kalimatrix-v1.0.0/
 │
 ├─ YouTubeTranscriber.exe     # run this file
 ├─ bin/                       # yt-dlp + ffmpeg executables
