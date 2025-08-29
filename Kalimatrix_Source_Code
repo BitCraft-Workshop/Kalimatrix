@@ -1,0 +1,415 @@
+import os
+import re
+import sys
+import shutil
+import subprocess
+import tkinter as tk
+from tkinter import filedialog, messagebox, ttk
+from faster_whisper import WhisperModel
+
+# App metadata
+APP_NAME = "YouTube / File Transcriber"
+APP_VERSION = "1.0.0"
+APP_SUMMARY = (
+    "A simple, local desktop app to download YouTube content or pick a local media file, "
+    "generate an MP3 for transcription, and create SRT subtitle files using faster-whisper. "
+    "No cloud processing; everything runs on your machine. Designed for ease-of-use and sharing."
+)
+
+def app_dir():
+    # folder of the exe when frozen, else folder of this file
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+def open_path(path):
+    try:
+        if sys.platform.startswith("win"):
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception as e:
+        messagebox.showerror("Open Path Error", str(e))
+
+def find_tool(tool_basename):
+    # prefer local bin/<tool>.exe, else PATH
+    exe_name = f"{tool_basename}.exe" if os.name == "nt" else tool_basename
+    local_path = os.path.join(app_dir(), "bin", exe_name)
+    if os.path.isfile(local_path):
+        return local_path
+    found = shutil.which(tool_basename)
+    return found if found else exe_name
+
+
+class YouTubeTranscriberApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title(APP_NAME)
+        self.root.geometry("500x600")
+
+        self.output_dir = os.getcwd()
+        self.file_path = ""
+
+        # --- Top menu ---
+        self._create_menu()
+
+        # --- Main UI ---
+        tk.Label(root, text="YouTube URL (or playlist):").pack(pady=5)
+        self.url_entry = tk.Entry(root, width=60)
+        self.url_entry.pack(pady=5)
+
+        tk.Label(root, text="Or select an MP4 or MP3 file:").pack(pady=5)
+        tk.Button(root, text="Browse File", command=self.select_file).pack(pady=5)
+
+        tk.Button(root, text="Set Output Directory", command=self.select_output_directory).pack(pady=5)
+
+        self.option_audio = tk.BooleanVar(value=True)
+        self.option_video = tk.BooleanVar(value=False)
+        tk.Checkbutton(root, text="Audio", variable=self.option_audio, command=self.update_start_button_state).pack()
+        tk.Checkbutton(root, text="Video", variable=self.option_video, command=self.update_start_button_state).pack()
+
+        self.start_button = tk.Button(root, text="Start Transcription",
+                                      command=self.process_transcription, state="normal")
+        self.start_button.pack(pady=10)
+
+        self.progress = ttk.Progressbar(root, length=400, mode='determinate')
+        self.progress.pack(pady=5)
+
+        self.status_label = tk.Label(root, text="Status: Waiting for input", wraplength=450)
+        self.status_label.pack(pady=5)
+
+        self.log_text = tk.Text(root, height=12, width=60, wrap=tk.WORD)
+        self.log_text.pack(pady=5)
+
+        self.update_start_button_state()
+
+    # -------- Menubar --------
+    def _create_menu(self):
+        menubar = tk.Menu(self.root)
+
+        # File
+        filemenu = tk.Menu(menubar, tearoff=0)
+        filemenu.add_command(label="Open File…", command=self.select_file)
+        filemenu.add_command(label="Set Output Directory…", command=self.select_output_directory)
+        filemenu.add_separator()
+        filemenu.add_command(label="Open Output Folder", command=lambda: open_path(self.output_dir))
+        filemenu.add_command(label="Open App Folder", command=lambda: open_path(app_dir()))
+        filemenu.add_separator()
+        filemenu.add_command(label="Clear Log", command=self._clear_log)
+        filemenu.add_separator()
+        filemenu.add_command(label="Exit", command=self.root.quit)
+        menubar.add_cascade(label="File", menu=filemenu)
+
+        # Help (detailed, step-by-step)
+        helpmenu = tk.Menu(menubar, tearoff=0)
+        helpmenu.add_command(label="How to Use (Step-by-Step)", command=self._show_help)
+        menubar.add_cascade(label="Help", menu=helpmenu)
+
+        # About (summary + contact)
+        aboutmenu = tk.Menu(menubar, tearoff=0)
+        aboutmenu.add_command(label="About", command=self._show_about)
+        menubar.add_cascade(label="About", menu=aboutmenu)
+
+        self.root.config(menu=menubar)
+
+    # -------- Menu helpers --------
+    def _clear_log(self):
+        self.log_text.delete("1.0", tk.END)
+
+    def _show_help(self):
+        messagebox.showinfo(
+            "How to Use",
+            (
+                "Quick Start:\n"
+                "1) Set where files will be saved:\n"
+                "   • Use 'File → Set Output Directory…' (recommended)\n"
+                "   • Or it will default to the current working folder.\n\n"
+                "2) Download from YouTube:\n"
+                "   • Open YouTube (video or playlist).\n"
+                "   • Click the Share button → Copy link.\n"
+                "     (This gives a clean, canonical URL.)\n"
+                "   • Paste it into the 'YouTube URL (or playlist)' box.\n"
+                "   • For playlists: open the playlist page, press Share → Copy Link,\n"
+                "     then paste. The link should include a 'list=' parameter.\n\n"
+                "3) Or select a local media file instead:\n"
+                "   • Click 'Browse File' and choose .mp3, .mp4, .m4a, .webm, .wav, or .mkv.\n\n"
+                "4) Choose what to produce:\n"
+                "   • Check 'Audio' to save MP3 directly (from YouTube) or convert local video to MP3.\n"
+                "   • Check 'Video' to download the video (best available format). The app will also\n"
+                "     create an MP3 copy for transcription from that video.\n"
+                "   • You can select one or both.\n\n"
+                "5) Start:\n"
+                "   • Click 'Start Transcription'. Progress appears in the bar; status and logs show below.\n\n"
+                "6) Results:\n"
+                "   • Media files and subtitles (.srt) are written to the output folder.\n"
+                "   • Each transcript is saved as '<name>_transcript.srt'.\n\n"
+                "Tips:\n"
+                "• Use 'File → Open Output Folder' to jump to saved files quickly.\n"
+                "• Respect YouTube’s Terms and copyrights; only download content you have rights to use.\n"
+            )
+        )
+
+    def _show_about(self):
+        messagebox.showinfo(
+            "About",
+            (
+                f"{APP_NAME}\nVersion {APP_VERSION}\n\n"
+                f"{APP_SUMMARY}\n\n"
+                "Built with: faster-whisper, yt-dlp, ffmpeg, and Tkinter.\n"
+                "Processing happens locally (no uploads).\n\n"
+                "Contact:\n"
+                "GitHub: https://github.com/BitCraft-Workshop\n"
+                "Email:  m.a.rabee@outlook.com\n"
+            )
+        )
+
+    # -------- Existing logic --------
+    def update_start_button_state(self):
+        if self.option_audio.get() or self.option_video.get():
+            self.start_button.config(state="normal")
+        else:
+            self.start_button.config(state="disabled")
+
+    def select_file(self):
+        filetypes = [("Audio/Video Files", "*.mp3 *.mp4 *.m4a *.webm *.wav *.mkv")]
+        self.file_path = filedialog.askopenfilename(filetypes=filetypes)
+        if self.file_path:
+            self.output_dir = os.path.dirname(self.file_path)
+            self.status_label.config(text=f"Selected file: {os.path.basename(self.file_path)}")
+            self.log(f"Selected file: {self.file_path}")
+
+    def select_output_directory(self):
+        selected_dir = filedialog.askdirectory()
+        if selected_dir:
+            self.output_dir = selected_dir
+            self.status_label.config(text=f"Output directory set to: {selected_dir}")
+            self.log(f"Output directory: {selected_dir}")
+
+    def log(self, message):
+        self.log_text.insert(tk.END, message + "\n")
+        self.log_text.see(tk.END)
+        self.root.update_idletasks()
+
+    def sanitize_filename(self, name):
+        return re.sub(r'[<>:"/\\|?*\u3000\uFF1A\u2022]', '_', name)
+
+    def process_transcription(self):
+        self.progress['value'] = 10
+        self.status_label.config(text="Processing...")
+        self.log("Starting transcription...")
+
+        url = self.url_entry.get().strip()
+        local_path = self.file_path.strip()
+
+        # Snapshot files before download to detect new ones reliably (no sleep)
+        exts = [".mp3", ".mp4", ".m4a", ".webm", ".wav", ".mkv"]
+        before = {
+            f for f in os.listdir(self.output_dir)
+            if os.path.isfile(os.path.join(self.output_dir, f)) and os.path.splitext(f)[1].lower() in exts
+        }
+
+        if url:
+            rc = self.download_youtube_audio(url)
+            if rc != 0:
+                return
+            self.log("yt-dlp finished. Verifying new files...")
+
+        # Scan for media files now
+        all_files = os.listdir(self.output_dir)
+        media_files = [
+            os.path.join(self.output_dir, f)
+            for f in all_files
+            if os.path.isfile(os.path.join(self.output_dir, f)) and os.path.splitext(f)[1].lower() in exts
+        ]
+
+        if url:
+            after = {os.path.basename(p) for p in media_files}
+            new_files = sorted(list(after - before))
+            if new_files:
+                self.log("New files: " + " | ".join(new_files))
+            else:
+                self.log("No new media files detected after download.")
+
+        if local_path and os.path.isfile(local_path) and local_path not in media_files:
+            media_files.append(local_path)
+
+        # Prepare audio list, converting videos to mp3 when needed
+        audio_files = []
+        for path in media_files:
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in [".mp3", ".wav", ".m4a"]:
+                self.log(f"Converting video to MP3: {path}")
+                mp3_path = self.convert_to_mp3(path)
+                if mp3_path:
+                    audio_files.append(mp3_path)
+            else:
+                audio_files.append(path)
+
+        if not audio_files:
+            messagebox.showerror("No Audio Files", "No valid audio files found for transcription.")
+            return
+
+        model_path = os.path.join(app_dir(), "models", "whisper-large-v3")
+        if not os.path.exists(model_path) or not os.path.isfile(os.path.join(model_path, "model.bin")):
+            messagebox.showerror(
+                "Model Missing",
+                "Whisper model not found in:\n\nmodels/whisper-large-v3\n\nPlease download it from:\n"
+                "https://huggingface.co/guillaumekln/faster-whisper-large-v3"
+            )
+            self.log("Model folder missing.")
+            return
+
+        try:
+            self.log(f"Loading model from: {model_path}")
+            model = WhisperModel(
+                model_size_or_path=model_path,
+                device="cpu",           # CPU-only to avoid torch dependency
+                compute_type="int8"     # fast & small on CPU; change to "float32" if needed
+            )
+
+            for index, path in enumerate(audio_files):
+                self.progress['value'] = 60
+                self.status_label.config(text=f"Transcribing ({index+1}/{len(audio_files)}): {os.path.basename(path)}")
+                self.log(f"Transcribing: {path}")
+
+                transcript_path = self.transcribe_with_faster_whisper(path, model)
+                if transcript_path:
+                    self.log(f"Finished: {transcript_path}")
+
+        except Exception as e:
+            self.log(f"Transcription error: {e}")
+            messagebox.showerror("Transcription Error", str(e))
+            return
+
+        self.progress['value'] = 100
+        self.status_label.config(text="All transcriptions complete.")
+        messagebox.showinfo("Done", "All transcriptions completed successfully.")
+
+    def download_youtube_audio(self, url):
+        try:
+            self.log("Fetching video(s)...")
+            output_template = os.path.join(self.output_dir, "%(title).200s.%(ext)s")
+
+            yt_dlp_path = find_tool("yt-dlp")
+            ffmpeg_path = find_tool("ffmpeg")
+            ffmpeg_dir = os.path.dirname(ffmpeg_path) if os.path.isabs(ffmpeg_path) else None
+
+            cmd = [
+                yt_dlp_path,
+                "--geo-bypass",
+                "-o", output_template,
+                "--no-progress",
+                "-q",
+                "--no-warnings",
+            ]
+            if ffmpeg_dir:
+                cmd += ["--ffmpeg-location", ffmpeg_dir]
+
+            # If video is selected, download video; else audio-only MP3
+            if self.option_video.get():
+                self.log("Downloading video(s)...")
+                cmd += ["-f", "bestvideo+bestaudio/best"]
+            elif self.option_audio.get():
+                self.log("Downloading audio(s) as MP3...")
+                cmd += [
+                    "-f", "bestaudio[ext=m4a]/bestaudio",
+                    "--extract-audio",
+                    "--audio-format", "mp3",
+                    "--audio-quality", "128K",
+                ]
+
+            self.log(f"Using yt-dlp at: {yt_dlp_path}")
+            if ffmpeg_dir:
+                self.log(f"Using ffmpeg at: {ffmpeg_path}")
+
+            result = subprocess.run(cmd + [url], capture_output=True, text=True, shell=False)
+
+            if result.stdout.strip():
+                self.log("yt-dlp stdout:\n" + result.stdout)
+            if result.stderr.strip():
+                self.log("yt-dlp stderr:\n" + result.stderr)
+
+            if result.returncode != 0:
+                self.log("yt-dlp failed.")
+                messagebox.showerror("Download Error", result.stderr or "yt-dlp failed")
+                return -1
+
+            return 0
+        except Exception as e:
+            self.log(f"Error: {e}")
+            messagebox.showerror("Download Error", str(e))
+            return -1
+
+    def convert_to_mp3(self, input_path):
+        try:
+            safe_base = self.sanitize_filename(os.path.splitext(os.path.basename(input_path))[0])
+            mp3_path = os.path.join(self.output_dir, f"{safe_base}.mp3")
+            ffmpeg_path = find_tool("ffmpeg")
+
+            cmd = [
+                ffmpeg_path,
+                "-hide_banner",
+                "-loglevel", "error",     # only show errors
+                "-nostdin",
+                "-y",
+                "-i", input_path,
+                "-map", "0:a:0?",         # first audio stream if present
+                "-err_detect", "ignore_err",
+                "-vn",
+                "-acodec", "libmp3lame",
+                "-b:a", "128k",
+                mp3_path,
+            ]
+            self.log(f"Using ffmpeg at: {ffmpeg_path}")
+            result = subprocess.run(cmd, capture_output=True, text=True, shell=False)
+
+            if result.returncode != 0:
+                if result.stderr.strip():
+                    self.log("FFmpeg stderr:\n" + result.stderr)
+                raise subprocess.CalledProcessError(result.returncode, cmd, result.stderr)
+
+            self.log(f"Converted to MP3: {mp3_path}")
+            return mp3_path
+        except subprocess.CalledProcessError as e:
+            self.log(f"FFmpeg conversion error: {e}")
+            messagebox.showerror("FFmpeg Error", str(e))
+            return None
+
+    def transcribe_with_faster_whisper(self, audio_path, model):
+        try:
+            segments, info = model.transcribe(audio_path, word_timestamps=True)
+            base_name = os.path.splitext(os.path.basename(audio_path))[0]
+            transcript_path = os.path.join(self.output_dir, f"{base_name}_transcript.srt")
+
+            words = []
+            for segment in segments:
+                if segment.words is not None:
+                    words.extend(segment.words)
+
+            with open(transcript_path, "w", encoding="utf-8") as f:
+                for idx in range(0, len(words), 8):
+                    chunk = words[idx:idx + 8]
+                    if not chunk:
+                        continue
+                    start = chunk[0].start
+                    end = chunk[-1].end
+                    text = ' '.join(w.word.strip() for w in chunk)
+
+                    start_srt = f"{int(start // 3600):02}:{int((start % 3600) // 60):02}:{int(start % 60):02},{int((start * 1000) % 1000):03}"
+                    end_srt = f"{int(end // 3600):02}:{int((end % 3600) // 60):02}:{int(end % 60):02},{int((end * 1000) % 1000):03}"
+
+                    f.write(f"{(idx // 8) + 1}\n{start_srt} --> {end_srt}\n{text}\n\n")
+
+            return transcript_path
+        except Exception as e:
+            self.log(f"Transcription failed: {e}")
+            messagebox.showerror("Transcription Error", str(e))
+            return None
+
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = YouTubeTranscriberApp(root)
+    root.mainloop()
